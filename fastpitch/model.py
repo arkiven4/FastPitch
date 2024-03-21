@@ -91,7 +91,7 @@ class TemporalPredictor(nn.Module):
     """Predicts a single float per each temporal location"""
 
     def __init__(self, input_size, filter_size, kernel_size, dropout,
-                 n_layers=2, n_predictions=1):
+                 n_layers=2, n_predictions=1, gin_channels=0, emoin_channels=0):
         super(TemporalPredictor, self).__init__()
 
         self.layers = nn.Sequential(*[
@@ -102,7 +102,21 @@ class TemporalPredictor(nn.Module):
         self.n_predictions = n_predictions
         self.fc = nn.Linear(filter_size, self.n_predictions, bias=True)
 
-    def forward(self, enc_out, enc_out_mask):
+        if gin_channels != 0:
+            self.cond = nn.Conv1d(gin_channels, input_size, 1)
+
+        if emoin_channels != 0:
+            self.cond_emo = nn.Conv1d(emoin_channels, input_size, 1)
+
+    def forward(self, enc_out, enc_out_mask, g=None, emo=None):
+        if g is not None:
+            g = torch.detach(g)
+            enc_out = enc_out + self.cond(g)
+
+        if emo is not None:
+            emo = torch.detach(emo)
+            enc_out = enc_out + self.cond_emo(emo)
+
         out = enc_out * enc_out_mask
         out = self.layers(out.transpose(1, 2)).transpose(1, 2)
         out = self.fc(out) * enc_out_mask
@@ -132,6 +146,9 @@ class FastPitch(nn.Module):
                  n_speakers, speaker_emb_weight, pitch_conditioning_formants=1):
         super(FastPitch, self).__init__()
 
+        gin_channels = 512
+        emoin_channels = 1024
+        
         self.encoder = FFTransformer(
             n_layer=in_fft_n_layers, n_head=in_fft_n_heads,
             d_model=symbols_embedding_dim,
@@ -146,17 +163,19 @@ class FastPitch(nn.Module):
             n_embed=n_symbols,
             padding_idx=padding_idx)
 
-        if n_speakers > 1:
-            self.speaker_emb = nn.Embedding(n_speakers, symbols_embedding_dim)
-        else:
-            self.speaker_emb = None
+        # if n_speakers > 1:
+        #     self.speaker_emb = nn.Embedding(n_speakers, symbols_embedding_dim)
+        # else:
+        #     self.speaker_emb = None
+        self.speaker_emb = nn.Linear(gin_channels, symbols_embedding_dim)
         self.speaker_emb_weight = speaker_emb_weight
 
         self.duration_predictor = TemporalPredictor(
             in_fft_output_size,
             filter_size=dur_predictor_filter_size,
             kernel_size=dur_predictor_kernel_size,
-            dropout=p_dur_predictor_dropout, n_layers=dur_predictor_n_layers
+            dropout=p_dur_predictor_dropout, n_layers=dur_predictor_n_layers, 
+            gin_channels=gin_channels, emoin_channels=emoin_channels
         )
 
         self.decoder = FFTransformer(
@@ -177,7 +196,8 @@ class FastPitch(nn.Module):
             filter_size=pitch_predictor_filter_size,
             kernel_size=pitch_predictor_kernel_size,
             dropout=p_pitch_predictor_dropout, n_layers=pitch_predictor_n_layers,
-            n_predictions=pitch_conditioning_formants
+            n_predictions=pitch_conditioning_formants,
+            gin_channels=gin_channels, emoin_channels=emoin_channels
         )
 
         self.pitch_emb = nn.Conv1d(
@@ -197,7 +217,8 @@ class FastPitch(nn.Module):
                 kernel_size=energy_predictor_kernel_size,
                 dropout=p_energy_predictor_dropout,
                 n_layers=energy_predictor_n_layers,
-                n_predictions=1
+                n_predictions=1,
+                gin_channels=gin_channels, emoin_channels=emoin_channels
             )
 
             self.energy_emb = nn.Conv1d(
@@ -249,27 +270,23 @@ class FastPitch(nn.Module):
     def forward(self, inputs, use_gt_pitch=True, pace=1.0, max_duration=75):
 
         (inputs, input_lens, mel_tgt, mel_lens, pitch_dense, energy_dense,
-         speaker, attn_prior, audiopaths) = inputs
+         spk_embeds, attn_prior, audiopaths, emo_embeds, lids) = inputs
 
         text_max_len = inputs.size(1)
         mel_max_len = mel_tgt.size(2)
 
         # Calculate speaker embedding
-        if self.speaker_emb is None:
-            spk_emb = 0
-        else:
-            spk_emb = self.speaker_emb(speaker).unsqueeze(1)
-            spk_emb.mul_(self.speaker_emb_weight)
+        spk_embeds = self.speaker_emb(spk_embeds).unsqueeze(1)
 
         # Input FFT
-        enc_out, enc_mask = self.encoder(inputs, conditioning=spk_emb)
+        enc_out, enc_mask = self.encoder(inputs, conditioning=spk_embeds)
 
         # Predict durations
-        log_dur_pred = self.duration_predictor(enc_out, enc_mask).squeeze(-1)
+        log_dur_pred = self.duration_predictor(enc_out, enc_mask, g=spk_embeds, emo=emo_embeds).squeeze(-1)
         dur_pred = torch.clamp(torch.exp(log_dur_pred) - 1, 0, max_duration)
 
         # Predict pitch
-        pitch_pred = self.pitch_predictor(enc_out, enc_mask).permute(0, 2, 1)
+        pitch_pred = self.pitch_predictor(enc_out, enc_mask, g=spk_embeds, emo=emo_embeds).permute(0, 2, 1)
 
         # Alignment
         text_emb = self.encoder.word_emb(inputs)
@@ -301,7 +318,7 @@ class FastPitch(nn.Module):
 
         # Predict energy
         if self.energy_conditioning:
-            energy_pred = self.energy_predictor(enc_out, enc_mask).squeeze(-1)
+            energy_pred = self.energy_predictor(enc_out, enc_mask, emo=emo_embeds).squeeze(-1)
 
             # Average energy over characters
             energy_tgt = average_pitch(energy_dense.unsqueeze(1), dur_tgt)

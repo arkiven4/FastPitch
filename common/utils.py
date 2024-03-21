@@ -81,20 +81,10 @@ def load_wav_to_torch(full_path, force_sampling_rate=None):
     return torch.FloatTensor(data.astype(np.float32)), sampling_rate
 
 
-def load_filepaths_and_text(dataset_path, fnames, has_speakers=False, split="|"):
-    def split_line(root, line):
-        parts = line.strip().split(split)
-        if has_speakers:
-            paths, non_paths = parts[:-2], parts[-2:]
-        else:
-            paths, non_paths = parts[:-1], parts[-1:]
-        return tuple(str(Path(root, p)) for p in paths) + tuple(non_paths)
-
-    fpaths_and_text = []
-    for fname in fnames:
-        with open(fname, encoding='utf-8') as f:
-            fpaths_and_text += [split_line(dataset_path, line) for line in f]
-    return fpaths_and_text
+def load_filepaths_and_text(filename, split="|"):
+  with open(filename, encoding='utf-8') as f:
+    filepaths_and_text = [line.strip().split(split) for line in f if int(line.strip().split(split)[1]) == 0]
+  return filepaths_and_text
 
 
 def to_gpu(x):

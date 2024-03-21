@@ -153,16 +153,15 @@ class TTSDataset(torch.utils.data.Dataset):
                  betabinomial_online_dir=None,
                  use_betabinomial_interpolator=True,
                  pitch_online_method='pyin',
+                 spk_embeds_path=None,
+                 emo_embeds_path=None,
+                 f0_embeds_path=None,
+                 database_name_index=None,
                  **ignored):
 
-        # Expect a list of filenames
-        if type(audiopaths_and_text) is str:
-            audiopaths_and_text = [audiopaths_and_text]
 
         self.dataset_path = dataset_path
-        self.audiopaths_and_text = load_filepaths_and_text(
-            dataset_path, audiopaths_and_text,
-            has_speakers=(n_speakers > 1))
+        self.audiopaths_and_text = load_filepaths_and_text(audiopaths_and_text)
         self.load_mel_from_disk = load_mel_from_disk
         if not load_mel_from_disk:
             self.max_wav_value = max_wav_value
@@ -174,6 +173,11 @@ class TTSDataset(torch.utils.data.Dataset):
 
         self.prepend_space_to_text = prepend_space_to_text
         self.append_space_to_text = append_space_to_text
+
+        self.spk_embeds_path = spk_embeds_path
+        self.emo_embeds_path = emo_embeds_path
+        self.f0_embeds_path = f0_embeds_path
+        self.database_name_index = database_name_index
 
         assert p_arpabet == 0.0 or p_arpabet == 1.0, (
             'Only 0.0 and 1.0 p_arpabet is currently supported. '
@@ -206,18 +210,29 @@ class TTSDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         # Separate filename and text
-        if self.n_speakers > 1:
-            audiopath, *extra, text, speaker = self.audiopaths_and_text[index]
-            speaker = int(speaker)
-        else:
-            audiopath, *extra, text = self.audiopaths_and_text[index]
-            speaker = None
+        # if self.n_speakers > 1:
+        #     audiopath, *extra, text, speaker = self.audiopaths_and_text[index]
+        #     speaker = int(speaker)
+        # else:
+        #     #audiopath, *extra, text = self.audiopaths_and_text[index]
+        #     speaker = None
+
+        audiopath, lid, text = self.audiopaths_and_text[index]
+        filename = audiopath.split("/")[-1].split(".")[0]
+        database_name = audiopath.split("/")[self.database_name_index]
 
         mel = self.get_mel(audiopath)
-        text = self.get_text(text)
-        pitch = self.get_pitch(index, mel.size(-1))
         energy = torch.norm(mel.float(), dim=0, p=2)
+
+        text = self.get_text(text)
         attn_prior = self.get_prior(index, mel.shape[1], text.shape[0])
+
+        spk_emb = torch.Tensor(np.load(f"{self.spk_embeds_path.replace('dataset_name', database_name)}/{filename}.npy"))
+        emo_emb = torch.Tensor(np.load(f"{self.emo_embeds_path.replace('dataset_name', database_name)}/{filename}.npy"))
+        pitch = np.load(f"{self.f0_embeds_path.replace('dataset_name', database_name)}/{filename}.npy")
+        pitch = torch.from_numpy(pitch)[None]
+        pitch = pitch[:, :mel.size(1)]
+        lid = self.get_lid(lid)
 
         assert pitch.size(-1) == mel.size(-1)
 
@@ -225,8 +240,8 @@ class TTSDataset(torch.utils.data.Dataset):
         if len(pitch.size()) == 1:
             pitch = pitch[None, :]
 
-        return (text, mel, len(text), pitch, energy, speaker, attn_prior,
-                audiopath)
+        return (text, mel, len(text), pitch, energy, spk_emb, attn_prior,
+                audiopath, emo_emb, lid)
 
     def __len__(self):
         return len(self.audiopaths_and_text)
@@ -239,8 +254,7 @@ class TTSDataset(torch.utils.data.Dataset):
                     sampling_rate, self.stft.sampling_rate))
             audio_norm = audio / self.max_wav_value
             audio_norm = audio_norm.unsqueeze(0)
-            audio_norm = torch.autograd.Variable(audio_norm,
-                                                 requires_grad=False)
+            audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
             melspec = self.stft.mel_spectrogram(audio_norm)
             melspec = torch.squeeze(melspec, 0)
         else:
@@ -323,6 +337,11 @@ class TTSDataset(torch.utils.data.Dataset):
             torch.save(pitch_mel, cached_fpath)
 
         return pitch_mel
+    
+    def get_lid(self, lid):
+        lid = torch.IntTensor([int(lid)])
+        return lid
+
 
 
 def ensure_disjoint(*tts_datasets):
@@ -338,6 +357,7 @@ class TTSCollate:
 
     def __call__(self, batch):
         """Collate training batch from normalized text and mel-spec"""
+
         # Right zero-pad all one-hot text sequences to max input length
         input_lengths, ids_sorted_decreasing = torch.sort(
             torch.LongTensor([len(x[0]) for x in batch]),
@@ -363,9 +383,13 @@ class TTSCollate:
             mel_padded[i, :, :mel.size(1)] = mel
             output_lengths[i] = mel.size(1)
 
-        n_formants = batch[0][3].shape[0]
-        pitch_padded = torch.zeros(mel_padded.size(0), n_formants,
-                                   mel_padded.size(2), dtype=batch[0][3].dtype)
+        spk_embeds = torch.FloatTensor(len(batch), 512)
+        emo_embeds = torch.FloatTensor(len(batch), 1024)
+        lid = torch.LongTensor(len(batch))
+
+        pitch_padded = torch.FloatTensor(len(batch), 1, max_target_len)
+        pitch_padded.zero_()
+        
         energy_padded = torch.zeros_like(pitch_padded[:, 0, :])
 
         for i in range(len(ids_sorted_decreasing)):
@@ -374,12 +398,9 @@ class TTSCollate:
             pitch_padded[i, :, :pitch.shape[1]] = pitch
             energy_padded[i, :energy.shape[0]] = energy
 
-        if batch[0][5] is not None:
-            speaker = torch.zeros_like(input_lengths)
-            for i in range(len(ids_sorted_decreasing)):
-                speaker[i] = batch[ids_sorted_decreasing[i]][5]
-        else:
-            speaker = None
+            spk_embeds[i, :] = batch[ids_sorted_decreasing[i]][5]
+            emo_embeds[i, :] = batch[ids_sorted_decreasing[i]][8]
+            lid[i] = batch[ids_sorted_decreasing[i]][9]
 
         attn_prior_padded = torch.zeros(len(batch), max_target_len,
                                         max_input_len)
@@ -395,13 +416,13 @@ class TTSCollate:
         audiopaths = [batch[i][7] for i in ids_sorted_decreasing]
 
         return (text_padded, input_lengths, mel_padded, output_lengths, len_x,
-                pitch_padded, energy_padded, speaker, attn_prior_padded,
-                audiopaths)
+                pitch_padded, energy_padded, spk_embeds, attn_prior_padded,
+                audiopaths, emo_embeds, lid)
 
 
 def batch_to_gpu(batch):
     (text_padded, input_lengths, mel_padded, output_lengths, len_x,
-     pitch_padded, energy_padded, speaker, attn_prior, audiopaths) = batch
+     pitch_padded, energy_padded, speaker, attn_prior, audiopaths, emo_embeds, lids) = batch
 
     text_padded = to_gpu(text_padded).long()
     input_lengths = to_gpu(input_lengths).long()
@@ -410,12 +431,14 @@ def batch_to_gpu(batch):
     pitch_padded = to_gpu(pitch_padded).float()
     energy_padded = to_gpu(energy_padded).float()
     attn_prior = to_gpu(attn_prior).float()
-    if speaker is not None:
-        speaker = to_gpu(speaker).long()
+    speaker = to_gpu(speaker).long()
+    emo_embeds = to_gpu(emo_embeds).long()
+    lids = to_gpu(lids).long()
+        
 
     # Alignments act as both inputs and targets - pass shallow copies
     x = [text_padded, input_lengths, mel_padded, output_lengths,
-         pitch_padded, energy_padded, speaker, attn_prior, audiopaths]
+         pitch_padded, energy_padded, speaker, attn_prior, audiopaths, emo_embeds, lids]
     y = [mel_padded, input_lengths, output_lengths]
     len_x = torch.sum(output_lengths)
     return (x, y, len_x)

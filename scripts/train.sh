@@ -2,15 +2,15 @@
 
 export OMP_NUM_THREADS=1
 
-: ${NUM_GPUS:=8}
+: ${NUM_GPUS:=2}
 : ${BATCH_SIZE:=16}
 : ${GRAD_ACCUMULATION:=2}
 : ${OUTPUT_DIR:="./output"}
 : ${LOG_FILE:=$OUTPUT_DIR/nvlog.json}
-: ${DATASET_PATH:=LJSpeech-1.1}
-: ${TRAIN_FILELIST:=filelists/ljs_audio_pitch_text_train_v3.txt}
-: ${VAL_FILELIST:=filelists/ljs_audio_pitch_text_val.txt}
-: ${AMP:=false}
+: ${DATASET_PATH:=/home/viblab/Data_Asisten/Pras/Database}
+: ${TRAIN_FILELIST:=filelists/paper2_train_filelist.txt}
+: ${VAL_FILELIST:=filelists/paper2_val_filelist.txt}
+: ${AMP:=true}
 : ${SEED:=""}
 
 : ${LEARNING_RATE:=0.1}

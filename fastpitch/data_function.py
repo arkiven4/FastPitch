@@ -153,10 +153,6 @@ class TTSDataset(torch.utils.data.Dataset):
                  betabinomial_online_dir=None,
                  use_betabinomial_interpolator=True,
                  pitch_online_method='pyin',
-                 spk_embeds_path=None,
-                 emo_embeds_path=None,
-                 f0_embeds_path=None,
-                 database_name_index=None,
                  **ignored):
 
 
@@ -174,10 +170,10 @@ class TTSDataset(torch.utils.data.Dataset):
         self.prepend_space_to_text = prepend_space_to_text
         self.append_space_to_text = append_space_to_text
 
-        self.spk_embeds_path = spk_embeds_path
-        self.emo_embeds_path = emo_embeds_path
-        self.f0_embeds_path = f0_embeds_path
-        self.database_name_index = database_name_index
+        self.spk_embeds_path = "/home/viblab/Data_Asisten/Pras/Database/dataset_name/spk_embeds/"
+        self.emo_embeds_path = "/home/viblab/Data_Asisten/Pras/Database/dataset_name/emo_embeds/"
+        self.f0_embeds_path = "/home/viblab/Data_Asisten/Pras/Database/dataset_name/f0_straight/"
+        self.database_name_index = 6
 
         assert p_arpabet == 0.0 or p_arpabet == 1.0, (
             'Only 0.0 and 1.0 p_arpabet is currently supported. '

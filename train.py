@@ -277,10 +277,10 @@ def init_multi_tensor_ema(model, ema_model):
     return model_weights, ema_model_weights, ema_overflow_buf
 
 
-def apply_multi_tensor_ema(decay, model_weights, ema_weights, overflow_buf):
-    amp_C.multi_tensor_axpby(
-        65536, overflow_buf, [ema_weights, model_weights, ema_weights],
-        decay, 1-decay, -1)
+# def apply_multi_tensor_ema(decay, model_weights, ema_weights, overflow_buf):
+#     amp_C.multi_tensor_axpby(
+#         65536, overflow_buf, [ema_weights, model_weights, ema_weights],
+#         decay, 1-decay, -1)
 
 
 def main():
@@ -312,8 +312,8 @@ def main():
 
     parser = models.parse_model_args('FastPitch', parser)
     args, unk_args = parser.parse_known_args()
-    if len(unk_args) > 0:
-        raise ValueError(f'Invalid options {unk_args}')
+    # if len(unk_args) > 0:
+    #     raise ValueError(f'Invalid options {unk_args}')
 
     torch.backends.cudnn.benchmark = args.cudnn_benchmark
 
@@ -492,8 +492,8 @@ def main():
                         model.parameters(), args.grad_clip_thresh)
                     optimizer.step()
 
-                if args.ema_decay > 0.0:
-                    apply_multi_tensor_ema(args.ema_decay, *mt_ema_params)
+                # if args.ema_decay > 0.0:
+                #     apply_multi_tensor_ema(args.ema_decay, *mt_ema_params)
 
                 iter_mel_loss = iter_meta['mel_loss'].item()
                 iter_kl_loss = iter_meta['kl_loss'].item()
